@@ -3,7 +3,7 @@
 #
 # Summarise ipf(8) logs
 #
-# $Id: 100.ipfcount,v 1.1 2005/11/26 11:34:41 admin Exp $
+# $Id: 100.ipfcount,v 1.2 2006/01/14 13:35:12 rob Exp $
 #
 
 # if there is a global system configuration file, suck it in
@@ -41,16 +41,16 @@ case "$daily_status_security_ipfcount_enable" in
 [Yy][Ee][Ss] )
 	case "$daily_status_security_ipfcount_hosts" in
 	[Yy][Ee][Ss] )
-		echo -e "\nTop $daily_status_security_ipfcount_top blocked hosts: "
+		echo -e "\nTop $daily_status_security_ipfcount_top blocked hosts (ipf): "
 		ipfcount_catfile $daily_status_security_ipfcount_logfile |
-			ipfcount -bink shost -t $daily_status_security_ipfcount_top
+			ipfcount -binqk shost -t $daily_status_security_ipfcount_top
 		;;
 	esac
 	case "$daily_status_security_ipfcount_ports" in
 	[Yy][Ee][Ss] )
-		echo -e "\nTop $daily_status_security_ipfcount_top blocked ports: "
+		echo -e "\nTop $daily_status_security_ipfcount_top blocked ports (ipf): "
 		ipfcount_catfile $daily_status_security_ipfcount_logfile |
-			ipfcount -bink dport -t $daily_status_security_ipfcount_top
+			ipfcount -binqk dport -t $daily_status_security_ipfcount_top
 		;;
 	esac
 	;;

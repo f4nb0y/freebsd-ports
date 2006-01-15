@@ -3,10 +3,10 @@
 #
 # Summarise ipf(8) logs
 #
-# Copyright (c) 2005 Robert Archer. As long as you retain this notice, you can
-# do whatever you want with this code.
+# Copyright (c) 2005, 2006 Robert Archer. As long as you retain this notice, you
+# can do whatever you want with this code.
 #
-# $Id: ipfcount,v 1.9 2005/12/20 11:21:08 admin Exp $
+# $Id: ipfcount,v 1.10 2006/01/14 13:34:17 rob Exp $
 #
 
 # pragmas
@@ -19,16 +19,45 @@ use Socket;
 
 # user info
 my $prog_name = (split '/', $0)[-1];
-my $user_info = "Usage: $prog_name [-binNop] [-e expr] -k key[,key...] [-t top] [file...]
+my $user_info = "Usage: $prog_name [-binNopq] [-e expr] -k key[,key...] [-t top] [file...]
 	-b		Count blocked packets
 	-i		Count incoming packets
 	-n		Lookup host and service names
 	-N		Lookup names before filtering
 	-o		Count outgoing packets
 	-p		Count passed packets
+	-q		Don't print headers
 	-e expr		Filter expression - see EXAMPLES
 	-k key[,key...]	Sort key(s)
 	-t top		Show only the top entries";
+
+# fields
+my @names = qw(iface group rule action shost sport dhost dport proto flags type dir);
+my $match = '
+  \ (\S+)		# iface
+  \ @(\d+):(\d+)	# group, rule
+  \ (%s)		# action
+  \ ([^] ,]+)		# shost
+    (?:\[[^]]+\])?
+    (?:,(\S+))?		# sport
+  \ ->
+  \ ([^] ,]+)		# dhost
+    (?:\[[^]]+\])?
+    (?:,(\S+))?		# dport
+  \ PR\ (\S+)		# proto
+  \ len\ \d+\ \S+
+    (?:\ -(\S+))?	# flags
+    (?:\ icmp\ (\S+))?	# type
+    .*
+  \ (%s)$		# dir
+';
+
+# titles
+my %titles;
+@titles{@names, 'b', 'p', 'IN', 'OUT'} = (
+  'interface', 'group', 'rule', 'action', 'source host', 'source port', 'destination host', 'destination port',
+  'protocol', 'TCP flags', 'ICMP type', 'direction', 'blocked', 'passed', 'incoming', 'outgoing'
+);
 
 #
 # Functions
@@ -111,37 +140,36 @@ sub in
 
   sub resolve
   {
+    # pragmas
+    no warnings;
+
     # locals
     my ($key, $list) = @_;
 
     if ($key =~ /port$/) {
       # lookup ports
       map {
-	$$_{$key} = $port{"$$_{proto}/$$_{$key}"} ||= ($$_{$key} && scalar getservbyport $$_{$key}, lc $$_{proto}) || $$_{$key}
+	$$_{$key} = $port{"$$_{proto}/$$_{$key}"} ||= (scalar getservbyport $$_{$key}, lc $$_{proto}) || $$_{$key}
       } @$list;
     }
     elsif ($key =~ /host$/) {
       # lookup hosts
       map {
-	$$_{$key} = $host{$$_{$key}} ||= ($$_{$key} && scalar gethostbyaddr inet_aton($$_{$key}), AF_INET) || $$_{$key}
+	$$_{$key} = $host{$$_{$key}} ||= (scalar gethostbyaddr inet_aton($$_{$key}), AF_INET) || $$_{$key}
       } @$list;
     }
   }
 }
 
 #
-# report \@keys, $top, \@list, $resolve, $depth
+# report \@keys, $top, \@list, $resolve, $quiet, \@header, $depth
 #
 # Print $top entries of @list sorted by @keys
 #
 sub report
 {
-  # formats
-  my $body   = '%-40s %7d';
-  my $footer = '(%d more...)';
-
   # locals
-  my ($keys, $top, $list, $resolve, $depth) = @_;
+  my ($keys, $top, $list, $resolve, $quiet, $header, $depth) = @_;
   my @keys   = @$keys;
   my $key    = shift @keys;
   my $indent = ' ' x ($depth * 4);
@@ -149,21 +177,25 @@ sub report
   # get lists
   my @group = collate $key, $list;
 
+  # header
+  unless ($quiet) {
+    print $indent, ucfirst $titles{$key};
+    if (my $extra = join ', ', @titles{@$header}, $top && scalar @group > $top ? "$top of " . scalar @group : ()) {
+      print " ($extra)";
+    }
+    print "\n$indent", '-' x 48, "\n";
+  }
+
   # sort by size
   for my $group (head $top, [ sort { scalar @$b <=> scalar @$a } @group ]) {
     # report
     resolve $key, $group if $resolve;
-    printf "$indent$body\n", $$group[0]{$key}, scalar @$group;
+    printf "$indent%-40s %7d\n", $$group[0]{$key}, scalar @$group;
 
     # next key
     if (@keys) {
-      report(\@keys, $top, $group, $resolve, $depth + 1);
+      report(\@keys, $top, $group, $resolve, $quiet, [], $depth + 1);
     }
-  }
-
-  # footer
-  if ($top && scalar @group > $top) {
-    printf "$indent$footer\n", scalar @group - $top;
   }
 }
 
@@ -171,32 +203,11 @@ sub report
 # Main
 #
 
-# fields
-my @names = qw(iface group rule action shost sport dhost dport proto flags type dir);
-my $match = '
-  \ (\S+)		# iface
-  \ @(\d+):(\d+)	# group, rule
-  \ (%s)		# action
-  \ ([^] ,]+)		# shost
-    (?:\[[^]]+\])?
-    (?:,(\S+))?		# sport
-  \ ->
-  \ ([^] ,]+)		# dhost
-    (?:\[[^]]+\])?
-    (?:,(\S+))?		# dport
-  \ PR\ (\S+)		# proto
-  \ len\ \d+\ \S+
-    (?:\ -(\S+))?	# flags
-    (?:\ icmp\ (\S+))?	# type
-    .*
-  \ (%s)$		# dir
-';
-
 # globals
 my (%options, @action, @dir, @expr, @keys, $top, @lines);
 
 # process options
-@ARGV && GetOptions \%options, qw(b i n N o p e=s@ k=s@ t=i)	or die "$user_info\n";
+@ARGV && GetOptions \%options, qw(b i n N o p q e=s@ k=s@ t=i)	or die "$user_info\n";
 push @action, 'b'	if $options{b};
 push @action, 'p'	if $options{p};
 push @dir,    'IN'	if $options{i};
@@ -237,9 +248,10 @@ for (@expr) {
   die $@ if $@;
 }
 
-# sort
+# process keys
 for (@keys) {
-  report $_, $top, \@lines, $options{n}, 0;
+  report $_, $top, \@lines, $options{n}, $options{q}, [@action, @dir], 0;
+  print "\n" if @keys > 1;
 }
 
 =head1 NAME
@@ -248,7 +260,7 @@ ipfcount - Summarise ipf logs
 
 =head1 SYNOPSIS
 
-ipfcount [B<-binNop>] [B<-e> I<expr>] B<-k> I<key>[,I<key>...] [B<-t> I<top>] [I<file>...]
+ipfcount [B<-binNopq>] [B<-e> I<expr>] B<-k> I<key>[,I<key>...] [B<-t> I<top>] [I<file>...]
 
 =head1 DESCRIPTION
 
@@ -307,6 +319,10 @@ Count outgoing packets
 =item B<-p>
 
 Count passed packets
+
+=item B<-q>
+
+Don't print headers
 
 =item B<-e> I<expr>
 
