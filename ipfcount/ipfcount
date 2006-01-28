@@ -6,7 +6,7 @@
 # Copyright (c) 2005, 2006 Robert Archer. As long as you retain this notice, you
 # can do whatever you want with this code.
 #
-# $Id: ipfcount,v 1.10 2006/01/14 13:34:17 rob Exp $
+# $Id: ipfcount,v 1.11 2006/01/26 12:17:22 rob Exp $
 #
 
 # pragmas
@@ -34,22 +34,22 @@ my $user_info = "Usage: $prog_name [-binNopq] [-e expr] -k key[,key...] [-t top]
 # fields
 my @names = qw(iface group rule action shost sport dhost dport proto flags type dir);
 my $match = '
-  \ (\S+)		# iface
-  \ @(\d+):(\d+)	# group, rule
-  \ (%s)		# action
-  \ ([^] ,]+)		# shost
+  \ (\S+)			# iface
+  \ @(\d+):(\d+)		# group, rule
+  \ (%s)			# action
+  \ ([^] ,]+)			# shost
     (?:\[[^]]+\])?
-    (?:,(\S+))?		# sport
+    (?:,(\S+))?			# sport
   \ ->
-  \ ([^] ,]+)		# dhost
+  \ ([^] ,]+)			# dhost
     (?:\[[^]]+\])?
-    (?:,(\S+))?		# dport
-  \ PR\ (\S+)		# proto
+    (?:,(\S+))?			# dport
+  \ PR\ (\S+)			# proto
   \ len\ \d+\ \S+
-    (?:\ -(\S+))?	# flags
-    (?:\ icmp\ (\S+))?	# type
+    (?:\ -(\S+))?		# flags
+    (?:\ icmp\ (\S+))?		# type
     .*
-  \ (%s)$		# dir
+  \ (%s)$			# dir
 ';
 
 # titles
@@ -175,7 +175,7 @@ sub report
   my $indent = ' ' x ($depth * 4);
 
   # get lists
-  my @group = collate $key, $list;
+  my @group = collate $key, $list or return;
 
   # header
   unless ($quiet) {
