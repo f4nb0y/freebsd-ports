@@ -1,0 +1,57 @@
+#!/bin/sh
+
+#
+# Summarise ipfw(8) logs
+#
+# $Id: 100.ipfwcount,v 1.2 2006/01/28 09:25:45 rob Exp $
+#
+
+# if there is a global system configuration file, suck it in
+if [ -r /etc/defaults/periodic.conf ] ; then
+	. /etc/defaults/periodic.conf
+	source_periodic_confs
+elif [ -r /etc/periodic.conf ]; then
+	. /etc/periodic.conf
+fi
+
+# set these in /etc/periodic.conf
+: ${daily_status_security_ipfwcount_enable=NO}			# print report
+: ${daily_status_security_ipfwcount_logfile=/var/log/security}	# logfiles to examine (may be compressed)
+: ${daily_status_security_ipfwcount_hosts=YES}			# print host report
+: ${daily_status_security_ipfwcount_ports=YES}			# print port report
+: ${daily_status_security_ipfwcount_top=10}			# limit of reporting (0 for no limit)
+
+# bzcat, gzcat or cat logfiles
+ipfwcount_catfile()
+{
+	local file
+	for file in $* ; do
+		case $file in
+		*.bz2 )	bzcat $file
+			;;
+		*.gz|*.Z ) gzcat $file
+			;;
+		* )	cat $file
+			;;
+		esac
+	done
+}
+
+case "$daily_status_security_ipfwcount_enable" in
+[Yy][Ee][Ss] )
+	case "$daily_status_security_ipfwcount_hosts" in
+	[Yy][Ee][Ss] )
+		echo -e "\nTop $daily_status_security_ipfwcount_top denied hosts (ipfw): "
+		ipfwcount_catfile $daily_status_security_ipfwcount_logfile |
+			ipfwcount -dinqk shost -t $daily_status_security_ipfwcount_top
+		;;
+	esac
+	case "$daily_status_security_ipfwcount_ports" in
+	[Yy][Ee][Ss] )
+		echo -e "\nTop $daily_status_security_ipfwcount_top denied ports (ipfw): "
+		ipfwcount_catfile $daily_status_security_ipfwcount_logfile |
+			ipfwcount -dinqk dport -t $daily_status_security_ipfwcount_top
+		;;
+	esac
+	;;
+esac

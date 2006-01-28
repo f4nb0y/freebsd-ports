@@ -1,0 +1,376 @@
+#!/usr/bin/perl -w
+
+#
+# Summarise ipfw(8) logs
+#
+# Copyright (c) 2005, 2006 Robert Archer. As long as you retain this notice, you
+# can do whatever you want with this code.
+#
+# $Id: ipfwcount,v 1.11 2006/01/28 09:57:11 rob Exp $
+#
+
+# pragmas
+use 5.006;
+use strict;
+
+# modules
+use Getopt::Long qw(:config bundling);
+use Socket;
+
+# user info
+my $prog_name = (split '/', $0)[-1];
+my $user_info = "Usage: $prog_name [-adinNoq] [-e expr] -k key[,key...] [-t top] [file...]
+	-a		Count allowed packets
+	-d		Count denied packets
+	-i		Count incoming packets
+	-n		Lookup host and service names
+	-N		Lookup names before filtering
+	-o		Count outgoing packets
+	-q		Don't print headers
+	-e expr		Filter expression - see EXAMPLES
+	-k key[,key...]	Sort key(s)
+	-t top		Show only the top entries";
+
+# fields
+my @names = qw(rule action proto type shost sport dhost dport dir iface);
+my $match = '
+  \ (\S+)			# rule
+  \ (%s)			# action
+  \ (?:P:)?
+    ([^ :]+)(?::(\S+))?		# proto, type
+  \ ([^ :]+)(?::(\S+))?		# shost, sport
+  \ ([^ :]+)(?::(\S+))?		# dhost, dport
+  \ (%s)			# dir
+  \ via
+  \ (\S+)$			# iface
+';
+
+# titles
+my %titles;
+@titles{@names, 'Allow', 'Deny', 'in', 'out'} = (
+  'rule', 'action', 'protocol', 'ICMP type', 'source host', 'source port', 'destination host',
+  'destination port', 'direction', 'interface', 'allowed', 'denied', 'incoming', 'outgoing'
+);
+
+#
+# Functions
+#
+
+#
+# collate $key, \@list
+#
+# Return list of lists sorted by $key
+#
+sub collate
+{
+  # locals
+  my ($key, $list) = @_;
+  my %result;
+
+  # build lists
+  for (@$list) {
+    push @{$result{$$_{$key}}}, $_ if $$_{$key} ne '';
+  }
+
+  # done
+  return values %result;
+}
+
+#
+# filter $expr, \@names, \@list
+#
+# Return items that match $expr
+#
+sub filter
+{
+  # locals
+  my ($expr, $names, $list) = @_;
+
+  # replace keys with refs
+  for (@$names) {
+    $expr =~ s/\b($_)\b/\$\$_\{$1\}/g;
+  }
+
+  # filter list
+  return eval "grep \{ $expr \} \@\$list";
+}
+
+#
+# head $top, \@list
+#
+# Return first $top items
+#
+sub head
+{
+  # locals
+  my ($top, $list) = @_;
+
+  # get items
+  return $top ? grep { defined } @$list[0..$top - 1] : @$list;
+}
+
+#
+# in $item, \@list
+#
+# Return true if $item is in @list
+#
+sub in
+{
+  # locals
+  my ($item, $list) = @_;
+
+  # get items
+  return grep { $_ eq $item } @$list;
+}
+
+#
+# resolve $key, \@list
+#
+# Replace elements of @list with lookups
+#
+{ # statics
+  my (%port, %host);
+
+  sub resolve
+  {
+    # pragmas
+    no warnings;
+
+    # locals
+    my ($key, $list) = @_;
+
+    if ($key =~ /port$/) {
+      # lookup ports
+      map {
+	$$_{$key} = $port{"$$_{proto}/$$_{$key}"} ||= (scalar getservbyport $$_{$key}, lc $$_{proto}) || $$_{$key}
+      } @$list;
+    }
+    elsif ($key =~ /host$/) {
+      # lookup hosts
+      map {
+	$$_{$key} = $host{$$_{$key}} ||= (scalar gethostbyaddr inet_aton($$_{$key}), AF_INET) || $$_{$key}
+      } @$list;
+    }
+  }
+}
+
+#
+# report \@keys, $top, \@list, $resolve, $quiet, \@header, $depth
+#
+# Print $top entries of @list sorted by @keys
+#
+sub report
+{
+  # locals
+  my ($keys, $top, $list, $resolve, $quiet, $header, $depth) = @_;
+  my @keys   = @$keys;
+  my $key    = shift @keys;
+  my $indent = ' ' x ($depth * 4);
+
+  # get lists
+  my @group = collate $key, $list or return;
+
+  # header
+  unless ($quiet) {
+    print $indent, ucfirst $titles{$key};
+    if (my $extra = join ', ', @titles{@$header}, $top && scalar @group > $top ? "$top of " . scalar @group : ()) {
+      print " ($extra)";
+    }
+    print "\n$indent", '-' x 48, "\n";
+  }
+
+  # sort by size
+  for my $group (head $top, [ sort { scalar @$b <=> scalar @$a } @group ]) {
+    # report
+    resolve $key, $group if $resolve;
+    printf "$indent%-40s %7d\n", $$group[0]{$key}, scalar @$group;
+
+    # next key
+    if (@keys) {
+      report(\@keys, $top, $group, $resolve, $quiet, [], $depth + 1);
+    }
+  }
+}
+
+#
+# Main
+#
+
+# globals
+my (%options, @action, @dir, @expr, @keys, $top, @lines);
+
+# process options
+@ARGV && GetOptions \%options, qw(a d i n N o q e=s@ k=s@ t=i)	or die "$user_info\n";
+push @action, 'Allow'	if $options{a};
+push @action, 'Deny'	if $options{d};
+push @dir,    'in'	if $options{i};
+push @dir,    'out'	if $options{o};
+@expr = @{$options{e} || []};
+@keys = map { [ split /,/, ] } @{$options{k} || []}		or die "Please specify a sort key (-k)\n";
+$top  = $options{t} || 0;
+
+# check keys
+for (@keys) {
+  for (@$_) {
+    in $_, \@names						or die "'$_' is not a key (@names)\n";
+  }
+}
+
+# process files
+$match = sprintf $match, join('|', @action) || '\S+', join('|', @dir) || '\S+';
+while (<>) {
+  my %fields;
+
+  # split fields
+  if (@fields{@names} = /$match/ox) {
+    map { $_ = defined $_ ? $_ : '' } values %fields;
+    push @lines, \%fields;
+  }
+}
+
+# lookup
+if ($options{N}) {
+  for (@names) {
+    resolve $_, \@lines;
+  }
+}
+
+# filter
+for (@expr) {
+  @lines = filter $_, \@names, \@lines;
+  die $@ if $@;
+}
+
+# process keys
+for (@keys) {
+  report $_, $top, \@lines, $options{n}, $options{q}, [@action, @dir], 0;
+  print "\n" if @keys > 1;
+}
+
+=head1 NAME
+
+ipfwcount - Summarise ipfw logs
+
+=head1 SYNOPSIS
+
+ipfwcount [B<-adinNoq>] [B<-e> I<expr>] B<-k> I<key>[,I<key>...] [B<-t> I<top>] [I<file>...]
+
+=head1 DESCRIPTION
+
+B<ipfwcount> summarises L<ipfw(8)> logs by counting and sorting the fields.
+The following fields are recognised:
+
+=over
+
+rule action proto type shost sport dhost dport dir iface
+
+=back
+
+By default, all input lines are processed - this can be restricted with the
+B<-a>, B<-d>, B<-i> and B<-o> options to count allowed, denied, incoming and
+outgoing packets respectively.
+
+The logs can be filtered further with the B<-e> option - see L</EXAMPLES>.
+
+At least one sort key must be given using the B<-k> option. B<ipfwcount> will
+list all the unique values in this field, from the most to the least common.
+Repeat this option to create multiple lists, or use comma separated keys to
+create nested lists.
+
+To list only the first I<top> values in each field, use the B<-t> option.
+
+If the B<-n> option is given, port numbers and IP addresses are resolved in the
+output. With the B<-N>, option, all input lines are resolved before filtering
+(which may take some time).
+
+If no files are specified, B<ipfwcount> reads from standard input.
+
+=head1 OPTIONS
+
+=over
+
+=item B<-a>
+
+Count allowed packets
+
+=item B<-d>
+
+Count denied packets
+
+=item B<-i>
+
+Count incoming packets
+
+=item B<-n>
+
+Lookup host and service names
+
+=item B<-N>
+
+Lookup names before filtering
+
+=item B<-o>
+
+Count outgoing packets
+
+=item B<-q>
+
+Don't print headers
+
+=item B<-e> I<expr>
+
+Filter expression - see L</EXAMPLES>
+
+=item B<-k> I<key>[,I<key>...]
+
+Sort key(s)
+
+=item B<-t> I<top>
+
+Show only the top I<top> entries
+
+=back
+
+=head1 EXAMPLES
+
+Show the top 10 denied ports for incoming traffic:
+
+    ipfwcount -di -k dport -t 10 /var/log/security
+
+Show the hosts attempting to connect to those ports:
+
+    ipfwcount -di -k dport,shost -t 10 /var/log/security
+
+Sort incoming connections by interface and protocol:
+
+    ipfwcount -ai -k iface,proto /var/log/security
+
+For more sophisticated filtering, use the B<-e> option - it takes a Perl
+expression, using field names as variables.
+
+Show denied ports above 1024:
+
+    ipfwcount -di -e 'dport > 1024' -k dport /var/log/security
+
+Show traffic leaving the local network:
+
+    ipfwcount -ao -e 'dhost !~ /^192\.168/' -k dhost /var/log/security
+
+The expression passed to B<-e> can also modify field values. This 'feature' may
+occasionally be useful.
+
+Show the class C network of denied hosts:
+
+    ipfwcount -di -e 'shost =~ s/\d+$/0/' -k shost /var/log/security
+
+Note that Perl uses different comparison operators for numbers and strings - see
+L<perlop(1)>.
+
+=head1 SEE ALSO
+
+L<ipfw(8)>, L<perlop(1)>
+
+=head1 AUTHOR
+
+Robert Archer <ipfwcount@deathbeforedecaf.net>
+
